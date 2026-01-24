@@ -1,19 +1,23 @@
-from flask import Flask, render_template, jsonify, request, session
+from flask import Flask, render_template, jsonify, request
 from src.helper import donwload_embeddings
 from langchain_pinecone import PineconeVectorStore
 from langchain_openai import ChatOpenAI
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.memory import ConversationBufferWindowMemory
-from langchain.chains import ConversationalRetrievalChain
 from dotenv import load_dotenv
 from src.prompt import *
 import os
+from langchain.memory import ConversationBufferMemory
+
+memory = ConversationBufferMemory(
+    memory_key="chat_history",
+    return_messages=True
+)
+
 
 #init flask
 app=Flask(__name__)
-app.secret_key = "your-secret-key-here"  # Required for session memory
 
 load_dotenv()
 
@@ -31,58 +35,54 @@ docsearch=PineconeVectorStore.from_existing_index(
     index_name=index_name
 )
 
-#chain setup
+#chain
 retriever = docsearch.as_retriever(
     search_type="similarity", 
     search_kwargs={"k": 3}  
 )
-
 chatModel = ChatOpenAI(
-    model="meta-llama/llama-3.3-70b-instruct:free",
+    model="meta-llama/llama-3.3-70b-instruct:free",  # Free model from OpenRouter
     base_url="https://openrouter.ai/api/v1",
     temperature=0
 )
-
-memory = ConversationBufferWindowMemory(
-    memory_key="chat_history",
-    k=5,  # Last 5 conversation turns
-    return_messages=True
-)
-
-prompt=ChatPromptTemplate.from_messages(
+prompt = ChatPromptTemplate.from_messages(
     [
-        ("system",system_prompt),
-        ("human","{input}"),
-        ("placeholder", "{chat_history}")  # Memory placeholder
+        ("system", system_prompt),
+        ("placeholder", "{chat_history}"),
+        ("human", "{input}")
     ]
 )
 
+
+#creating chain
 question_answer_chain=create_stuff_documents_chain(chatModel,prompt)
 rag_chain=create_retrieval_chain(retriever,question_answer_chain)
 
-# Create conversational chain with memory
-conversational_rag_chain = ConversationalRetrievalChain.from_llm(
-    llm=chatModel,
-    retriever=retriever,
-    memory=memory,
-    combine_docs_chain=question_answer_chain
-)
-
+#route
 @app.route("/")
 def index():
     return render_template('chat.html')
 
+#when user clicks on send button
 @app.route('/get',methods=["GET","POST"])
 def chat():
-    msg=request.form['msg']
-    print(f"User: {msg}")
-    response = conversational_rag_chain({"question": msg})
-    answer = response["answer"]
-    
-    print("AI Response:", answer)
-    print("Chat History:", memory.chat_memory.messages)
-    
-    return str(answer)
+    msg = request.form['msg']
+    print(msg)
 
+    response = rag_chain.invoke({
+        "input": msg,
+        "chat_history": memory.chat_memory.messages
+    })
+
+    memory.chat_memory.add_user_message(msg)
+    memory.chat_memory.add_ai_message(response["answer"])
+
+    print("Response:", response["answer"])
+    return str(response["answer"])
+
+
+#execute the app
 if __name__=="__main__":
     app.run(host="0.0.0.0" , port=8080, debug=True)
+
+
